@@ -1,0 +1,296 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  //output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ====================================
+// MODÈLES UTILISATEUR & AUTHENTIFICATION
+// ====================================
+
+model User {
+  id         String   @id @default(cuid())
+  email      String   @unique
+  firstName  String?
+  lastName   String?
+  phone      String?
+  password   String
+  gender     String? // Genre de l'utilisateur exemple "Homme", "Femme", "Autre"
+  avatar     String? // URL de l'avatar
+  
+  isActive   Boolean  @default(true)
+  isVerified Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relations
+  items         Item[]
+  messages      Message[]
+  reports       Report[]
+  notifications Notification[]
+  authProviders AuthProvider[]
+
+  passwordHash String? // Pour l'authentification par email
+  resetToken   String? // Pour la réinitialisation du mot de passe
+
+  @@map("users")
+}
+
+model AuthProvider {
+  id           String @id @default(cuid())
+  userId       String
+  provider     String // "google", "facebook", "apple", "email"
+  providerId   String // ID du provider externe
+  providerData Json? // Données supplémentaires du provider
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerId])
+  @@map("auth_providers")
+}
+
+// ====================================
+// MODÈLES OBJETS & ANNONCES
+// ====================================
+model Category {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+  icon        String? // Nom de l'icône
+  color       String? // Couleur hex
+  isActive    Boolean @default(true)
+  isDeleted   Boolean @default(false) // Suppression logique
+
+  items Item[]
+
+  @@map("categories")
+}
+
+model Item {
+  id          String     @id @default(cuid())
+  title       String
+  description String     @db.Text
+  status      ItemStatus
+  type        ItemType // LOST ou FOUND
+
+  // Informations de localisation
+  location  String // Adresse textuelle
+  latitude  Float? // Coordonnées GPS
+  longitude Float?
+  radius    Int? // Rayon de recherche en mètres
+
+  // Dates importantes
+  lostFoundAt DateTime // Date où l'objet a été perdu/trouvé
+  expiresAt   DateTime? // Date d'expiration de l'annonce
+
+  // Métadonnées
+  color      String?
+  brand      String?
+  size       String?
+  material   String?
+  attributes Json? // Attributs spécifiques (JSON flexible)
+
+  // Gestion
+  isActive    Boolean @default(true)
+  isModerated Boolean @default(false)
+  isDeleted   Boolean @default(false) // Suppression logique
+  priority    Int     @default(1) // Pour l'algorithme de suggestion
+  viewCount   Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  userId     String
+  categoryId String?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  images       ItemImage[]
+  messages     Message[]
+  reports      Report[]
+  matches      ItemMatch[] @relation("ItemMatches")
+  matchedItems ItemMatch[] @relation("MatchedItems")
+
+  @@index([status, type, isActive])
+  @@index([latitude, longitude])
+  @@index([lostFoundAt])
+  @@index([userId])
+  @@map("items")
+}
+
+model ItemImage {
+  id     String  @id @default(cuid())
+  itemId String
+  url    String
+  alt    String?
+  order  Int     @default(0)
+  isMain Boolean @default(false)
+
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@map("item_images")
+}
+
+// ====================================
+// SYSTÈME DE CORRESPONDANCES IA
+// ====================================
+
+model ItemMatch {
+  id            String      @id @default(cuid())
+  itemId        String // Objet principal
+  matchedItemId String // Objet correspondant
+  similarity    Float // Score de similarité (0-1)
+  status        MatchStatus @default(PENDING)
+  matchedAt     DateTime    @default(now())
+
+  // Relations
+  item        Item @relation("ItemMatches", fields: [itemId], references: [id], onDelete: Cascade)
+  matchedItem Item @relation("MatchedItems", fields: [matchedItemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, matchedItemId])
+  @@map("item_matches")
+}
+
+// ====================================
+// SYSTÈME DE MESSAGERIE
+// ====================================
+
+model Message {
+  id      String        @id @default(cuid())
+  content String        @db.Text
+  type    MessageType   @default(TEXT)
+  status  MessageStatus @default(SENT)
+
+  createdAt DateTime  @default(now())
+  readAt    DateTime?
+  isDeleted   Boolean @default(false) // Suppression logique
+
+  // Relations
+  senderId String
+  itemId   String
+
+  sender User @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  item   Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId, createdAt])
+  @@map("messages")
+}
+
+// ====================================
+// SYSTÈME DE MODÉRATION
+// ====================================
+
+model Report {
+  id          String       @id @default(cuid())
+  reason      ReportType
+  description String?      @db.Text
+  status      ReportStatus @default(PENDING)
+
+  createdAt  DateTime  @default(now())
+  isDeleted   Boolean @default(false) // Suppression logique
+  resolvedAt DateTime?
+
+  // Relations
+  reporterId String
+  itemId     String
+
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+  item     Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([reporterId, itemId]) // Un utilisateur ne peut signaler qu'une fois le même objet
+  @@map("reports")
+}
+
+// ====================================
+// SYSTÈME DE NOTIFICATIONS
+// ====================================
+
+model Notification {
+  id      String           @id @default(cuid())
+  type    NotificationType
+  title   String
+  message String           @db.Text
+  data    Json? // Données supplémentaires (JSON)
+
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  isDeleted   Boolean @default(false) // Suppression logique
+
+  // Relations
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@map("notifications")
+}
+
+// ====================================
+// ENUMS
+// ====================================
+
+enum ItemStatus {
+  ACTIVE // Annonce active
+  RESOLVED // Objet retrouvé/rendu
+  EXPIRED // Annonce expirée
+  SUSPENDED // Suspendue par modération
+}
+
+enum ItemType {
+  LOST // Objet perdu
+  FOUND // Objet trouvé
+}
+
+enum MatchStatus {
+  PENDING // En attente de validation
+  CONFIRMED // Correspondance confirmée
+  REJECTED // Correspondance rejetée
+}
+
+enum MessageType {
+  TEXT // Message texte simple
+  CONTACT // Demande de contact
+  CLAIM // Revendication d'objet
+  SYSTEM // Message système
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+}
+
+enum ReportType {
+  SPAM
+  INAPPROPRIATE
+  FAKE
+  DUPLICATE
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  RESOLVED
+  DISMISSED
+}
+
+enum NotificationType {
+  NEW_MATCH // Nouvelle correspondance trouvée
+  NEW_MESSAGE // Nouveau message reçu
+  ITEM_CLAIMED // Objet revendiqué
+  ITEM_RESOLVED // Objet marqué comme retrouvé
+  ITEM_EXPIRING // Annonce expire bientôt
+  MODERATION_ALERT // Alerte de modération
+}
